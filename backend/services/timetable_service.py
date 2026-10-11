@@ -272,36 +272,6 @@ class TimetableService:
         right_end = max(right_end, right_start + right_duration)
         return left_start < right_end and right_start < left_end
 
-    def get_previous_timetable_for_scope(self, academic_year: str | None, semester: int | None, current_timetable_id: str | None = None):
-        if not academic_year or semester is None:
-            return None
-
-        try:
-            timetables = self.get_timetables(academic_year=academic_year, semester=semester)
-        except RuntimeError:
-            timetables = []
-        eligible = [
-            row for row in timetables
-            if str(row.get("id")) != str(current_timetable_id) and row.get("id") is not None
-        ]
-        if not eligible:
-            return None
-
-        previous = sorted(
-            eligible,
-            key=lambda row: str(row.get("created_at") or "1970-01-01T00:00:00Z"),
-            reverse=True,
-        )[0]
-        previous_id = previous.get("id")
-        if not previous_id:
-            return None
-
-        try:
-            previous_entries = self.get_enriched_timetable_entries(previous_id, semester)
-        except RuntimeError:
-            previous_entries = self.get_timetable_entries(previous_id) if previous_id else []
-        return {"timetable": previous, "entries": previous_entries, "message": "Previous timetable loaded."}
-
     def get_student_groups(self, semester: int | None = None, department: str | None = None):
         if not HAS_SUPABASE_CONFIG:
             raise RuntimeError("Supabase is not configured.")

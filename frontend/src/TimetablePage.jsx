@@ -24,7 +24,6 @@ export default function TimetablePage({ data, live, backendStatus = 'ready', dep
   const [room, setRoom] = useState('All rooms');
   const [day, setDay] = useState('All days');
   const [query, setQuery] = useState('');
-  const [previousView, setPreviousView] = useState(null);
   const semester = data?.timetable?.semester || 3;
   const academicYear = data?.timetable?.academic_year || '2026–27';
   useEffect(() => {
@@ -34,7 +33,6 @@ export default function TimetablePage({ data, live, backendStatus = 'ready', dep
     setRoom('All rooms');
     setDay('All days');
     setQuery('');
-    setPreviousView(null);
   }, [data?.timetable?.id, semester, onDepartmentChange]);
   useEffect(() => {
     setGroup('All groups');
@@ -60,19 +58,6 @@ export default function TimetablePage({ data, live, backendStatus = 'ready', dep
   const sessionsByDay = Object.fromEntries(DAYS.map((name) => [name, makeLanes(filtered.filter((session) => session.day === name))]));
   const scopeLabel = group !== 'All groups' ? `${department === 'All departments' ? 'All Departments' : department} · ${group}` : department === 'All departments' ? 'All Departments' : department;
   const clearFilters = () => { setDepartment('All departments'); setGroup('All groups'); setFaculty('All faculty'); setRoom('All rooms'); setDay('All days'); setQuery(''); };
-  const loadPreviousTimetable = async () => {
-    if (!data?.timetable?.id) return;
-    try {
-      const response = await api.getPreviousTimetable(academicYear, semester, data.timetable.id);
-      if (!response?.timetable || !response.entries?.length) {
-        setPreviousView({ empty: true, message: response?.message || 'No previous timetable is available for comparison yet.' });
-        return;
-      }
-      setPreviousView(response);
-    } catch (error) {
-      setPreviousView({ empty: true, message: error?.message || 'No previous timetable is available for comparison yet.' });
-    }
-  };
   const exportCsv = () => {
     if (!data?.timetable || !filtered.length) {
       notify(filtered.length ? 'No timetable loaded.' : 'No sessions match the active filters.');
@@ -110,36 +95,11 @@ export default function TimetablePage({ data, live, backendStatus = 'ready', dep
   if (backendStatus === 'connecting' || !live) return <section className="timetable-empty panel"><Activity className="spin" size={24}/><h2>Loading timetable...</h2><p>Fetching persisted timetable data.</p></section>;
 
   return <>
-    <div className="timetable-page-header"><div><div className="eyebrow">ACADEMIC OPERATIONS / WEEKLY VIEW</div><h1>Weekly Timetable</h1><p>{academicYear} · Semester {semester} · {scopeLabel} · Live persisted schedule</p></div><div className="timetable-header-actions"><span className="live-chip"><i/> Live backend data</span><button className="button" onClick={exportCsv}><Download size={15}/> Export CSV</button><button className="button" onClick={previousView ? () => setPreviousView(null) : loadPreviousTimetable}>{previousView ? 'Hide Previous Timetable' : 'View Previous Timetable'}</button><button className="button primary" onClick={() => navigate('generate')}><Zap size={15}/> Generate / Re-optimize</button></div></div>
+    <div className="timetable-page-header"><div><div className="eyebrow">ACADEMIC OPERATIONS / WEEKLY VIEW</div><h1>Weekly Timetable</h1><p>{academicYear} · Semester {semester} · {scopeLabel} · Live persisted schedule</p></div><div className="timetable-header-actions"><span className="live-chip"><i/> Live backend data</span><button className="button" onClick={exportCsv}><Download size={15}/> Export CSV</button><button className="button primary" onClick={() => navigate('generate')}><Zap size={15}/> Generate / Re-optimize</button></div></div>
     <div className="timetable-controls panel"><div className="timetable-selectors"><SelectFilter label="Department" value={department} onChange={onDepartmentChange} options={['All departments', ...(data.departments || []).map((item) => item.code || item.short_name || item.name)]}/><SelectFilter label="Student group" value={group} onChange={setGroup} options={options('group', 'All groups')}/><SelectFilter label="Faculty" value={faculty} onChange={setFaculty} options={options('faculty', 'All faculty')}/><SelectFilter label="Room" value={room} onChange={setRoom} options={options('room', 'All rooms')}/><SelectFilter label="Day" value={day} onChange={setDay} options={['All days', ...DAYS]}/></div><div className="timetable-search"><Search size={16}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search course, faculty, group or room"/><button className="icon-button" onClick={clearFilters} aria-label="Clear timetable filters"><X size={15}/></button></div></div>
     <div className="timetable-summary"><Summary icon={CalendarDays} label="Total sessions" value={data.entries.length}/><Summary icon={Gauge} label="Optimization score" value={data.timetable.optimization_score}/><Summary icon={CircleAlert} label="Conflicts" value={data.timetable.total_conflicts}/><Summary icon={Layers3} label="Rooms used" value={roomsUsed}/></div>
-    {previousView && <section className="comparison-panel panel"><div className="comparison-header"><div><span className="eyebrow">TIMETABLE COMPARISON</span><h2>Current vs previous</h2></div></div>{previousView.empty ? <div className="compare-empty">{previousView.message}</div> : <div className="comparison-grid"><ComparisonColumn title="Previous Timetable" subtitle={previousView.timetable?.name || 'Historical schedule'} rows={previousView.entries || []} currentRows={filtered} /><ComparisonColumn title="Current Timetable" subtitle={`Semester ${semester}`} rows={filtered} currentRows={previousView.entries || []} /></div>}</section>}
     <section className="weekly-panel panel"><div className="weekly-heading"><div><span className="eyebrow">WEEKLY SCHEDULE</span><h2>Semester {semester} timetable</h2><p>{filtered.length} visual sessions from {data.entries.length} persisted timetable rows</p></div><span className="filter-result"><Filter size={14}/> Filters update locally</span></div><div className="weekly-scroll"><div className="weekly-board"><div className="weekly-time-head">TIME</div>{DAYS.map((name) => <div className="weekly-day-head" key={name}>{name}<small>{sessionsByDay[name].length} sessions</small></div>)}<div className="weekly-time-column">{uniqueTimes.map((slot) => <div className="weekly-time-label" key={slot.id || slot.start_time}><strong>{String(slot.start_time).slice(0, 5)}</strong><span>{String(slot.end_time).slice(0, 5)}</span></div>)}</div>{DAYS.map((name) => <DayColumn key={name} sessions={sessionsByDay[name]} timeRows={uniqueTimes} onEntry={onEntry}/>)}</div></div></section>
   </>;
-}
-
-function ComparisonColumn({ title, subtitle, rows, currentRows = [] }) {
-  const comparisonRows = (rows || []).map((row) => {
-    const courseCode = row.course?.course_code || row.code || '—';
-    const courseName = row.course?.course_name || row.name || '—';
-    const faculty = row.faculty?.name || row.faculty || '—';
-    const room = row.room?.name || row.room || '—';
-    const day = row.time_slot?.day_name || row.day || '—';
-    const start = row.time_slot?.start_time?.slice(0, 5) || row.startTime || '—';
-    const end = row.time_slot?.end_time?.slice(0, 5) || row.endTime || '—';
-    const key = `${courseCode}|${day}|${start}|${faculty}|${room}`;
-    const changed = Boolean(currentRows.length && !currentRows.some((currentRow) => {
-      const currentCourseCode = currentRow.course?.course_code || currentRow.code || '—';
-      const currentFaculty = currentRow.faculty?.name || currentRow.faculty || '—';
-      const currentRoom = currentRow.room?.name || currentRow.room || '—';
-      const currentDay = currentRow.time_slot?.day_name || currentRow.day || '—';
-      const currentStart = currentRow.time_slot?.start_time?.slice(0, 5) || currentRow.startTime || '—';
-      return `${currentCourseCode}|${currentDay}|${currentStart}|${currentFaculty}|${currentRoom}` === key;
-    }));
-    return { key, courseCode, courseName, faculty, room, day, time: `${start}-${end}`, changed };
-  });
-
-  return <div className="comparison-column"><div className="comparison-column-header"><strong>{title}</strong><span>{subtitle}</span></div>{comparisonRows.length ? comparisonRows.map((row) => <div key={row.key} className={`comparison-item ${row.changed ? 'changed' : ''}`}><div className="comparison-meta"><span>{row.day}</span><span>{row.time}</span></div><strong>{row.courseCode}</strong><p>{row.courseName}</p><small>{row.faculty} · {row.room}</small></div>) : <div className="compare-empty">No sessions available.</div>}</div>;
 }
 
 function Summary({ icon: Icon, label, value }) {

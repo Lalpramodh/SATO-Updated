@@ -71,14 +71,6 @@ export const api = {
     const query = params.toString();
     return request(`/timetables${query ? `?${query}` : ''}`, { signal });
   },
-  getPreviousTimetable: (academicYear, semester, currentTimetableId, signal) => {
-    const params = new URLSearchParams();
-    if (academicYear) params.set('academic_year', academicYear);
-    if (semester !== undefined && semester !== null) params.set('semester', semester);
-    if (currentTimetableId) params.set('current_timetable_id', currentTimetableId);
-    const query = params.toString();
-    return request(`/timetable/previous${query ? `?${query}` : ''}`, { signal });
-  },
   getSummary: (semester = 1, signal) => request(`/timetable/data?semester=${semester}`, { signal }),
   generateTimetable: (payload, signal) => request('/timetable/generate', { method: 'POST', body: JSON.stringify(payload), signal }),
 };

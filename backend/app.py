@@ -190,29 +190,6 @@ def get_timetables():
         return jsonify({"error": "Unable to load timetables."}), 500
 
 
-@app.get('/api/timetable/previous')
-def get_previous_timetable():
-    try:
-        if not HAS_SUPABASE_CONFIG:
-            return jsonify({"error": "Supabase is not configured."}), 503
-        academic_year = request.args.get('academic_year')
-        semester = request.args.get('semester')
-        current_timetable_id = request.args.get('current_timetable_id')
-        if not academic_year:
-            return jsonify({"timetable": None, "entries": [], "message": "No previous timetable is available for comparison yet."}), 200
-        try:
-            semester_value = int(semester) if semester not in (None, '') else None
-        except ValueError:
-            return jsonify({"error": "semester must be an integer."}), 400
-        previous = timetable_service.get_previous_timetable_for_scope(academic_year, semester_value, current_timetable_id=current_timetable_id)
-        if previous is None:
-            return jsonify({"timetable": None, "entries": [], "message": "No previous timetable is available for comparison yet."}), 200
-        return jsonify(previous), 200
-    except Exception:  # pragma: no cover - defensive logging
-        logger.exception("Failed to fetch previous timetable")
-        return jsonify({"error": "Unable to load previous timetable."}), 500
-
-
 @app.get('/api/timetable/<timetable_id>')
 def get_timetable_by_id(timetable_id):
     try:

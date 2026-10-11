@@ -1,6 +1,5 @@
 const runtimeEnv = typeof import.meta !== 'undefined' && import.meta && import.meta.env ? import.meta.env : {};
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "/api";
+const API_BASE_URL = runtimeEnv.VITE_API_BASE_URL || "/api";
 export class ApiError extends Error {
   constructor(status, message) {
     super(message);
@@ -60,6 +59,10 @@ export const api = {
   getCourses: (semester = 1, signal) => request(`/courses?semester=${semester}`, { signal }),
   getFaculty: (signal) => request('/faculty', { signal }),
   addFaculty: (payload, signal) => request('/faculty', { method: 'POST', body: JSON.stringify(payload), signal }),
+  assignFacultyToEntry: (timetableId, entryId, facultyId, signal) => request(
+    `/timetable/${encodeURIComponent(timetableId)}/entries/${encodeURIComponent(entryId)}/faculty`,
+    { method: 'PUT', body: JSON.stringify({ faculty_id: facultyId }), signal },
+  ),
   getStudentGroups: (semester = 1, signal) => request(`/student-groups?semester=${semester}`, { signal }),
   getRooms: (signal) => request('/rooms', { signal }),
   getTimeSlots: (signal) => request('/time-slots', { signal }),

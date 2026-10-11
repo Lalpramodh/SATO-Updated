@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createBackendHealthCheck } from './api.js';
+import { api, createBackendHealthCheck } from './api.js';
 
 test('createBackendHealthCheck retries until the backend becomes available', async () => {
   let calls = 0;
@@ -23,4 +23,67 @@ test('createBackendHealthCheck retries until the backend becomes available', asy
 
   await assert.doesNotReject(() => waitForBackend());
   assert.equal(calls, 3);
+});
+
+test('addFaculty preserves the structured conflict response for the modal', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({
+      error: 'FACULTY_SCHEDULING_CONFLICT',
+      message: 'This faculty member is already assigned.',
+      details: { faculty: 'Dr. Ravi', requested_time: '09:00-11:00' },
+    }),
+  });
+
+  try {
+    await assert.rejects(api.addFaculty({}), (error) => {
+      assert.equal(error.status, 409);
+      assert.equal(error.errorCode, 'FACULTY_SCHEDULING_CONFLICT');
+      assert.equal(error.payload.details.requested_time, '09:00-11:00');
+      return true;
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('unrelated API errors retain their own error code', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 500,
+    json: async () => ({ error: 'INTERNAL_ERROR', message: 'Unable to load data.' }),
+  });
+
+  try {
+    await assert.rejects(api.addFaculty({}), (error) => {
+      assert.equal(error.status, 500);
+      assert.equal(error.errorCode, 'INTERNAL_ERROR');
+      assert.notEqual(error.errorCode, 'FACULTY_SCHEDULING_CONFLICT');
+      return true;
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('assignFacultyToEntry uses the row-scoped PUT endpoint', async () => {
+  const previousFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, options };
+    return { ok: true, json: async () => ({ assigned: true }) };
+  };
+
+  try {
+    const response = await api.assignFacultyToEntry('table-1', 'entry-2', 'faculty-3');
+    assert.equal(response.assigned, true);
+    assert.match(request.url, /table-1\/entries\/entry-2\/faculty$/);
+    assert.equal(request.options.method, 'PUT');
+    assert.deepEqual(JSON.parse(request.options.body), { faculty_id: 'faculty-3' });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });

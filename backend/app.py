@@ -32,6 +32,10 @@ class CreateFacultyRequest(BaseModel):
     max_hours_per_week: int = Field(..., ge=1, le=168)
 
 
+class FacultyEntryAssignmentRequest(BaseModel):
+    faculty_id: str = Field(..., min_length=1)
+
+
 def parse_semester(value):
     if value in (None, ''):
         return None
@@ -80,6 +84,10 @@ def faculty_endpoint():
         record = timetable_service.insert_faculty(request_model.model_dump(exclude={"semester", "course_id"}))
         assignment = timetable_service.assign_faculty_to_selected_course(record, request_model.semester, request_model.course_id)
         if not assignment.get("assigned", False) and assignment.get("error") == "FACULTY_SCHEDULING_CONFLICT":
+            try:
+                timetable_service.delete_faculty(str(record["id"]))
+            except Exception:
+                logger.exception("Failed to remove faculty record after a rejected timetable assignment")
             return jsonify({
                 "error": assignment["error"],
                 "message": assignment["message"],
@@ -98,6 +106,35 @@ def faculty_endpoint():
             return jsonify({"error": "A faculty record with these details already exists."}), 409
         logger.exception("Failed to create faculty")
         return jsonify({"error": f"Unable to add faculty: {str(exc) or 'Unknown backend error.'}"}), 500
+
+
+@app.put('/api/timetable/<timetable_id>/entries/<entry_id>/faculty')
+def assign_faculty_to_timetable_entry_endpoint(timetable_id, entry_id):
+    if not HAS_SUPABASE_CONFIG:
+        return jsonify({"error": "Supabase is not configured."}), 503
+    try:
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"error": "Request body is required."}), 400
+        request_model = FacultyEntryAssignmentRequest.model_validate(payload)
+        result = timetable_service.assign_faculty_to_timetable_entry(
+            timetable_id,
+            entry_id,
+            request_model.faculty_id,
+        )
+        if not result.get("assigned", False):
+            status = result.get("status", 422)
+            return jsonify({
+                "error": result.get("error", "FACULTY_ASSIGNMENT_REJECTED"),
+                "message": result.get("message", "Unable to assign faculty to this class."),
+                "details": result.get("details", {}),
+            }), status
+        return jsonify(result), 200
+    except ValidationError as exc:
+        return jsonify({"error": "Invalid faculty assignment.", "details": exc.errors()}), 400
+    except Exception:
+        logger.exception("Failed to assign faculty to timetable entry %s", entry_id)
+        return jsonify({"error": "Unable to assign faculty to this class."}), 500
 
 
 @app.get('/api/student-groups')

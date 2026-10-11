@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import './facultyConflict.css';
 import {
   Activity, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown, Clock3, Database, LogOut,
   Download, FlaskConical, Gauge, Grid2X2, GraduationCap, LayoutDashboard, Menu, Moon, MoreHorizontal,
@@ -44,6 +46,7 @@ function ApplicationShell() {
   const [liveData, setLiveData] = useState(null);
   const [dataState, setDataState] = useState('connecting');
   const [timetableId, setTimetableId] = useState(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [selectedSemester, setSelectedSemester] = useState(3);
   const [selectedDepartment, setSelectedDepartment] = useState('All departments');
   const semesterOptions = [3];
@@ -137,17 +140,14 @@ function ApplicationShell() {
       if (retryTimer) window.clearTimeout(retryTimer);
       controller.abort();
     };
-  }, [timetableId, selectedSemester]);
+  }, [timetableId, selectedSemester, refreshVersion]);
 
   const data = liveData || { timetable: { academic_year: '2026-27', semester: selectedSemester }, entries: [], courses: [], departments: [], faculty: [], groups: [], rooms: [], timeSlots: [], summary: {} };
 
   const navigate = (next) => { setPage(next); setDrawerEntry(null); };
   const openEntry = (entry) => setDrawerEntry({ ...entry, timetable: data.timetable });
   const notify = (message) => { setToast(message); window.setTimeout(() => setToast(''), 2600); };
-  const refreshFaculty = async () => {
-    const facultyResponse = await api.getFaculty();
-    setLiveData((current) => current ? { ...current, faculty: facultyResponse } : current);
-  };
+  const refreshData = () => setRefreshVersion((current) => current + 1);
 
     return <div className={dark ? 'app dark' : 'app'}>
     <aside className={sidebarOpen ? 'sidebar' : 'sidebar collapsed'}>
@@ -164,7 +164,7 @@ function ApplicationShell() {
             {page === 'timetable' && <TimetablePage data={data} live={dataState === 'live'} backendStatus={dataState} department={selectedDepartment} onDepartmentChange={setSelectedDepartment} onEntry={openEntry} navigate={navigate} notify={notify}/>} 
             {page === 'generate' && <GeneratePage navigate={navigate} notify={notify} departments={data.departments} initialSemester={selectedSemester} onSemesterChange={setSelectedSemester} onGenerated={(id) => setTimetableId(id)}/>} 
             {page === 'analytics' && <AnalyticsPage data={data} department={selectedDepartment}/>} 
-            {page === 'faculty' && <FacultyDirectory data={data} onRefresh={refreshFaculty} notify={notify}/>} 
+            {page === 'faculty' && <FacultyDirectory data={data} onRefresh={refreshData} notify={notify}/>}
             {page === 'rooms' && <Directory title="Room inventory" subtitle="Track learning spaces, capacity, and timetable utilization." icon={Building2} columns={['Room', 'Type', 'Location', 'Capacity', 'Utilization', 'Status']} rows={(liveData?.rooms || rooms).map((item) => [item.name, item.room_type || item.type, `${item.building || '—'}, Floor ${item.floor || '—'}`, item.capacity, item.utilization ? `${item.utilization}%` : '—', item.status || 'Ready'])}/>} 
             {page === 'groups' && <Directory title="Student groups" subtitle="Review cohorts, departments, semesters, and enrollment sizes." icon={GraduationCap} columns={['Group', 'Department', 'Semester', 'Students', 'Status']} rows={(data.groups || []).map((item) => [item.name, item.department_id || item.department || '—', item.semester ?? '—', item.student_count ?? item.size ?? '—', 'Active'])}/>} 
             {page === 'courses' && <Directory title="Course catalog" subtitle="Browse the courses available for the selected semester." icon={BookOpen} columns={['Course code', 'Course name', 'Type', 'Department', 'Semester', 'Credits']} rows={(data.courses || []).map((item) => [item.course_code, item.course_name, item.course_type || '—', item.department_id || item.department || '—', item.semester ?? '—', item.credits ?? '—'])}/>} 
@@ -213,19 +213,25 @@ function Directory({ title, subtitle, icon: Icon, columns, rows, actions }) { co
 
 function FacultyDirectory({ data, onRefresh, notify }) {
   const [open, setOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [conflictAlert, setConflictAlert] = useState(null);
   const departments = data.departments || [];
   const departmentName = (departmentId) => departments.find((item) => String(item.id) === String(departmentId))?.code || departments.find((item) => String(item.id) === String(departmentId))?.name || departmentId || '—';
-  const rows = (data.faculty || []).map((item) => [item.name, departmentName(item.department_id), item.email, item.max_hours_per_week ? `${item.max_hours_per_week} hrs max` : '—', 'Available']);
-  return <><Directory title="Faculty directory" subtitle="Monitor teaching capacity and availability across the institution." icon={Users} columns={['Faculty', 'Department', 'Email', 'Scheduled hours', 'Availability']} rows={rows} actions={<Button primary icon={Plus} onClick={() => setOpen(true)}>Add Faculty</Button>}/>{open && <AddFacultyModal departments={departments} close={() => setOpen(false)} onRefresh={onRefresh} notify={notify}/>}</>;
+  const rows = (data.faculty || []).map((item) => {
+    const assignedEntries = (data.entries || []).filter((entry) => String(entry.facultyId) === String(item.id));
+    const scheduledHours = assignedEntries.reduce((total, entry) => total + (Number(entry.duration) || 1), 0);
+    const hours = `${scheduledHours} / ${item.max_hours_per_week || '—'} hrs`;
+    return [item.name, departmentName(item.department_id), item.email, `${hours} (${assignedEntries.length} classes)`, 'Available'];
+  });
+  return <><Directory title="Faculty directory" subtitle="Monitor teaching capacity and availability across the institution." icon={Users} columns={['Faculty', 'Department', 'Email', 'Scheduled hours', 'Availability']} rows={rows} actions={<><Button primary icon={CalendarDays} onClick={() => setAssignOpen(true)}>Assign Faculty</Button><Button icon={Plus} onClick={() => setOpen(true)}>Add Faculty</Button></>}/>{open && <AddFacultyModal departments={departments} close={() => setOpen(false)} onRefresh={onRefresh} notify={notify} onConflict={setConflictAlert}/ >}{assignOpen && <AssignFacultyModal timetableId={data.timetable?.id} entries={data.entries || []} faculty={data.faculty || []} close={() => setAssignOpen(false)} onRefresh={onRefresh} notify={notify} onConflict={setConflictAlert}/ >}{conflictAlert && <FacultyConflictDialog conflict={conflictAlert} close={() => setConflictAlert(null)}/>}</>;
 }
 
-function AddFacultyModal({ departments, close, onRefresh, notify }) {
+function AddFacultyModal({ departments, close, onRefresh, notify, onConflict }) {
   const [form, setForm] = useState({ employee_code: '', name: '', email: '', department_id: '', semester: '3', course_id: '', max_hours_per_week: '16' });
   const [courses, setCourses] = useState([]);
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [conflictAlert, setConflictAlert] = useState(null);
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
   useEffect(() => {
     setForm((current) => ({ ...current, course_id: '' }));
@@ -256,10 +262,17 @@ function AddFacultyModal({ departments, close, onRefresh, notify }) {
       close();
     } catch (requestError) {
       if (requestError?.status === 409 && requestError?.errorCode === 'FACULTY_SCHEDULING_CONFLICT') {
-        setConflictAlert(requestError.payload || {
-          error: 'FACULTY_SCHEDULING_CONFLICT',
-          message: requestError.message || 'This faculty member is already assigned to another class during this time slot. Please select a different faculty member or time slot.',
-          details: {},
+        const details = requestError.payload?.details || {};
+        const selectedCourse = courses.find((course) => String(course.id) === String(form.course_id));
+        onConflict({
+          ...requestError.payload,
+          message: requestError.message || 'This faculty member is already assigned to another class during the selected time.',
+          details: {
+            ...details,
+            faculty: details.faculty || form.name,
+            faculty_employee_code: details.faculty_employee_code || form.employee_code,
+            requested_course: details.requested_course || [selectedCourse?.course_code, selectedCourse?.course_name].filter(Boolean).join(' - ') || 'Selected course',
+          },
         });
         return;
       }
@@ -270,8 +283,70 @@ function AddFacultyModal({ departments, close, onRefresh, notify }) {
   };
   return <>
     <div className="modal-backdrop" onClick={close}><section className="faculty-modal panel" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">Faculty directory</span><h2>Add Faculty</h2></div><button className="icon-button" onClick={close} aria-label="Close add faculty dialog"><X size={18}/></button></div><form onSubmit={submit}><div className="faculty-form-grid"><label>Employee code<input required value={form.employee_code} onChange={update('employee_code')} placeholder="CSE-FAC-106"/></label><label>Full name<input required value={form.name} onChange={update('name')} placeholder="Dr. A. Kumar"/></label><label>Email<input required type="email" value={form.email} onChange={update('email')} placeholder="faculty@college.edu"/></label><label>Department<select required value={form.department_id} onChange={update('department_id')}><option value="">Select department</option>{departments.map((item) => <option key={item.id} value={item.id}>{item.code || item.short_name || item.name}</option>)}</select></label><label>Semester<select required value={form.semester} onChange={update('semester')}>{[3].map((value) => <option key={value} value={value}>Semester {value}</option>)}</select></label><label>Subject/Course<select required value={form.course_id} disabled={!form.department_id || loadingCourses} onChange={update('course_id')}><option value="">{loadingCourses ? 'Loading subjects...' : 'Select subject'}</option>{courses.map((item) => <option key={item.id} value={item.id}>{item.course_code} — {item.course_name}</option>)}</select></label><label>Maximum hours per week<input required type="number" min="1" max="168" value={form.max_hours_per_week} onChange={update('max_hours_per_week')}/></label></div>{error && <div className="error-callout"><CircleAlert size={16}/>{error}</div>}<div className="modal-actions"><button type="button" className="button" onClick={close}>Cancel</button><button type="submit" className="button primary" disabled={saving}>{saving ? 'Saving...' : 'Add Faculty'}</button></div></form></section></div>
-    {conflictAlert && <div className="modal-backdrop" onClick={() => setConflictAlert(null)}><section className="conflict-dialog panel" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">Scheduling validation</span><h2>Faculty Scheduling Conflict</h2></div><button className="icon-button" onClick={() => setConflictAlert(null)} aria-label="Close conflict dialog"><X size={18}/></button></div><div className="conflict-content"><div className="conflict-icon"><CircleAlert size={18}/></div><p>{conflictAlert.message}</p>{conflictAlert.details && <div className="conflict-details"><span><strong>Faculty</strong> {conflictAlert.details.faculty || '—'}</span><span><strong>Day</strong> {conflictAlert.details.day || '—'}</span><span><strong>Time</strong> {conflictAlert.details.requested_time || conflictAlert.details.conflicting_time || '—'}</span>{conflictAlert.details.conflicting_course && <span><strong>Conflicting class</strong> {conflictAlert.details.conflicting_course}</span>}</div>}</div><div className="modal-actions"><button type="button" className="button primary" onClick={() => setConflictAlert(null)}>Close</button></div></section></div>}
   </>;
+}
+
+function AssignFacultyModal({ timetableId, entries, faculty, close, onRefresh, notify, onConflict }) {
+  const [form, setForm] = useState({ entryId: '', facultyId: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const selectedEntry = entries.find((entry) => String(entry.id) === String(form.entryId));
+  const selectedFaculty = faculty.find((member) => String(member.id) === String(form.facultyId));
+  const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    if (!timetableId || !selectedEntry || !selectedFaculty) {
+      setError('Select an existing faculty member and a class from the current timetable.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const response = await api.assignFacultyToEntry(timetableId, selectedEntry.id, selectedFaculty.id);
+      onRefresh();
+      notify(response.message || 'Faculty assigned to the selected class.');
+      close();
+    } catch (requestError) {
+      if (requestError?.status === 409 && requestError?.errorCode === 'FACULTY_SCHEDULING_CONFLICT') {
+        const details = requestError.payload?.details || {};
+        onConflict({
+          ...requestError.payload,
+          message: requestError.message,
+          details: {
+            ...details,
+            faculty: details.faculty || selectedFaculty.name,
+            faculty_employee_code: details.faculty_employee_code || selectedFaculty.employee_code,
+            requested_course: details.requested_course || `${selectedEntry.code} - ${selectedEntry.name}`,
+            requested_class: details.requested_class || `${selectedEntry.code} - ${selectedEntry.name} (${selectedEntry.group})`,
+            day: details.day || selectedEntry.day,
+            requested_time: details.requested_time || `${selectedEntry.time}-${selectedEntry.endTime}`,
+          },
+        });
+        return;
+      }
+      setError(requestError.message || 'Unable to assign faculty. Check the selected records and try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="modal-backdrop" onClick={close}><section className="faculty-modal panel faculty-assignment-modal" role="dialog" aria-modal="true" aria-labelledby="assign-faculty-title" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">Timetable assignment</span><h2 id="assign-faculty-title">Assign Faculty</h2></div><button className="icon-button" onClick={close} aria-label="Close faculty assignment dialog"><X size={18}/></button></div><form onSubmit={submit}><div className="faculty-form-grid"><label>Existing faculty<select required value={form.facultyId} onChange={update('facultyId')}><option value="">Select faculty</option>{faculty.map((member) => <option key={member.id} value={member.id}>{member.name}{member.employee_code ? ` (${member.employee_code})` : ''}</option>)}</select></label><label>Timetable class<select required value={form.entryId} onChange={update('entryId')}><option value="">Select class and time</option>{entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.code} - {entry.name} / {entry.group} / {entry.day} {entry.time}-{entry.endTime}</option>)}</select></label></div>{selectedEntry && <div className="assignment-preview"><strong>{selectedEntry.code} - {selectedEntry.name}</strong><span>{selectedEntry.group} · {selectedEntry.day} · {selectedEntry.time}-{selectedEntry.endTime} · {selectedEntry.duration || 1} hr</span></div>}{!entries.length && <div className="error-callout"><CircleAlert size={16}/>There are no persisted classes in the current timetable to assign.</div>}{!faculty.length && <div className="error-callout"><CircleAlert size={16}/>There are no existing faculty records available.</div>}{error && <div className="error-callout" role="alert"><CircleAlert size={16}/>{error}</div>}<div className="modal-actions"><button type="button" className="button" onClick={close} disabled={saving}>Cancel</button><button type="submit" className="button primary" disabled={saving || !entries.length || !faculty.length}>{saving ? 'Assigning…' : 'Assign Faculty'}</button></div></form></section></div>;
+}
+
+function FacultyConflictDialog({ conflict, close }) {
+  const closeButtonRef = useRef(null);
+  const details = conflict.details || {};
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') close();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [close]);
+  return createPortal(<div className="faculty-conflict-backdrop" onClick={close}><section className="faculty-conflict-dialog panel" role="alertdialog" aria-modal="true" aria-labelledby="faculty-conflict-title" aria-describedby="faculty-conflict-message" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">Scheduling validation</span><h2 id="faculty-conflict-title">Faculty Scheduling Conflict</h2></div><CircleAlert size={21} aria-hidden="true"/></div><p id="faculty-conflict-message">The faculty member is already assigned to another class during the selected time.</p><dl className="faculty-conflict-details"><div><dt>Faculty</dt><dd>{details.faculty || '—'}{details.faculty_employee_code ? ` (${details.faculty_employee_code})` : ''}</dd></div><div><dt>Requested course/class</dt><dd>{details.requested_class || details.requested_course || '—'}</dd></div><div><dt>Conflicting course/class</dt><dd>{details.conflicting_class || details.conflicting_course || '—'}</dd></div><div><dt>Day</dt><dd>{details.day || '—'}</dd></div><div><dt>Requested time</dt><dd>{details.requested_time || '—'}</dd></div><div><dt>Existing conflicting time</dt><dd>{details.conflicting_time || '—'}</dd></div></dl><div className="modal-actions"><button ref={closeButtonRef} type="button" className="button primary" onClick={close}>Close</button></div></section></div>, document.body);
 }
 
 function Settings() { return <><PageHeader eyebrow="Workspace / Settings" title="Settings" subtitle="Control workspace preferences and API connection behavior."/><div className="settings-grid"><section className="panel settings-panel"><div className="panel-heading"><div><span className="eyebrow">Workspace</span><h3>Academic defaults</h3></div></div>{[['Default academic year', '2026-27'], ['Default semester', '3'], ['Timezone', 'Asia/Kolkata']].map(([label, value]) => <label className="setting-field" key={label}>{label}<select defaultValue={value}><option>{value}</option></select></label>)}<div className="setting-toggle"><div><strong>Compact timetable density</strong><span>Fit more sessions into the weekly grid.</span></div><button className="switch"><i/></button></div></section><section className="panel settings-panel"><div className="panel-heading"><div><span className="eyebrow">Integrations</span><h3>System connections</h3></div></div><div className="connection"><div className="connection-icon"><Database size={17}/></div><div><strong>Supabase data service</strong><span>Configured through the backend API</span></div><StatusBadge>Connected</StatusBadge></div><div className="connection"><div className="connection-icon cyan"><Activity size={17}/></div><div><strong>Optimization engine</strong><span>OR-Tools CP-SAT scheduler</span></div><StatusBadge>Online</StatusBadge></div></section></div></>; }

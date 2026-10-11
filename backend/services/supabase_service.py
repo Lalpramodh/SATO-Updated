@@ -64,6 +64,11 @@ class SupabaseService:
             return response.data[0]
         return response
 
+    def delete_faculty(self, faculty_id: str):
+        if not self.client:
+            raise RuntimeError("Supabase is not configured.")
+        return self.client.table("faculty").delete().eq("id", faculty_id).execute()
+
     def update_timetable_entries_faculty(self, timetable_id: str, course_id: str, faculty_id: str):
         if not self.client:
             raise RuntimeError("Supabase is not configured.")
@@ -72,6 +77,19 @@ class SupabaseService:
             .update({"faculty_id": faculty_id})
             .eq("timetable_id", timetable_id)
             .eq("course_id", course_id)
+            .execute()
+        )
+        return response.data if hasattr(response, "data") else response
+
+    def update_timetable_entry_faculty(self, timetable_id: str, entry_id: str, faculty_id: str):
+        if not self.client:
+            raise RuntimeError("Supabase is not configured.")
+        response = (
+            self.client.table("timetable_entries")
+            .update({"faculty_id": faculty_id})
+            .eq("timetable_id", timetable_id)
+            .eq("id", entry_id)
+            .select("*")
             .execute()
         )
         return response.data if hasattr(response, "data") else response

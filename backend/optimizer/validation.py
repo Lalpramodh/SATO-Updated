@@ -130,11 +130,11 @@ def validate_candidate_assignments(
         violations.append(violation)
 
     if not isinstance(assignments, list):
-        return {"valid": False, "violation_count": 1, "violations": [{"code": "invalid_assignments", "message": "Candidate assignments must be a list."}]}
+        return {"valid": False, "violation_count": 1, "violations": [{"code": "invalid_assignments", "message": "Timetable assignments must be a list."}]}
 
     for assignment in assignments:
         if not isinstance(assignment, dict):
-            add_violation("invalid_assignment", "A candidate assignment is malformed.")
+            add_violation("invalid_assignment", "A timetable assignment is malformed.")
             continue
 
         course_id = str(assignment.get("course_id") or "")
@@ -153,14 +153,14 @@ def validate_candidate_assignments(
             (room_id, room, "room"),
         ):
             if not reference or found is None:
-                add_violation("invalid_reference", f"Candidate references an unknown {label}.", assignment, reference=reference or None)
+                add_violation("invalid_reference", f"Timetable references an unknown {label}.", assignment, reference=reference or None)
 
         duration = _safe_int(assignment.get("duration_hours"), 0)
         slot_ids = [str(value) for value in assignment.get("time_slot_ids", [])] if isinstance(assignment.get("time_slot_ids"), list) else []
         if duration < 1 or len(slot_ids) != duration:
             add_violation("invalid_duration", "Session duration does not match its occupied time blocks.", assignment, duration_hours=duration, occupied_blocks=len(slot_ids))
         if len(set(slot_ids)) != len(slot_ids) or any(slot_id not in slot_map for slot_id in slot_ids):
-            add_violation("invalid_time_slot", "Candidate contains a duplicate or unknown time slot.", assignment)
+            add_violation("invalid_time_slot", "Timetable contains a duplicate or unknown time slot.", assignment)
         elif slot_ids and duration > 0:
             expected_block = _contiguous_block(time_slots, slot_map, slot_ids[0], duration)
             if expected_block != slot_ids:
@@ -173,7 +173,7 @@ def validate_candidate_assignments(
                 add_violation("course_duration_mismatch", "Session duration does not match the course requirement.", assignment, required_duration=required_duration)
             required_faculty = course.get("faculty_id")
             if required_faculty is not None and str(required_faculty) != faculty_id:
-                add_violation("course_faculty_mismatch", "Candidate does not use the course's required faculty member.", assignment)
+                add_violation("course_faculty_mismatch", "Timetable does not use the course's required faculty member.", assignment)
             if group is not None and (
                 (course.get("group_id") is not None and str(course.get("group_id")) != group_id)
                 or (course.get("group_id") is None and course.get("department_id") is not None and group.get("department_id") is not None and str(course.get("department_id")) != str(group.get("department_id")))
@@ -216,7 +216,7 @@ def validate_candidate_assignments(
             course_name = " - ".join(str(value) for value in (course.get("course_code"), course.get("course_name")) if value) or course_id
             violations.append({
                 "code": "session_count",
-                "message": f"{course_name} requires {required_sessions} session(s), but the candidate has {actual_sessions}.",
+                "message": f"{course_name} requires {required_sessions} session(s), but the timetable has {actual_sessions}.",
                 "course_id": course_id,
                 "required_sessions": required_sessions,
                 "actual_sessions": actual_sessions,

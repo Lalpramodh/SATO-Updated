@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, CircleAlert, Play, SlidersHorizontal, Check } from 'lucide-react';
 import { api, ApiError } from './api';
 
@@ -21,25 +21,6 @@ function generationError(error) {
   return `Generation failed: ${error?.message || 'Unknown scheduling engine error.'}`;
 }
 
-function assignmentDescription(assignment) {
-  const course = [assignment.course_code, assignment.course_name].filter(Boolean).join(' - ') || assignment.course_id || 'Unknown course';
-  const group = assignment.group_name || assignment.group_id || 'Unknown group';
-  const faculty = assignment.faculty_name || assignment.faculty_employee_code || assignment.faculty_id || 'Unassigned';
-  const room = assignment.room_name || assignment.room_id || 'Unknown room';
-  return `${course} · ${group} · ${assignment.day || 'Unknown day'} ${assignment.start_time || '??:??'}-${assignment.end_time || '??:??'} · ${faculty} · ${room}`;
-}
-
-function violationDescription(violation) {
-  const details = [violation.resource, violation.day].filter(Boolean);
-  if (violation.requested_time || violation.conflicting_time) {
-    details.push([violation.requested_time, violation.conflicting_time].filter(Boolean).join(' vs '));
-  } else if (violation.time) {
-    details.push(violation.time);
-  }
-  if (violation.classes?.length) details.push(violation.classes.join(' / '));
-  return [violation.message, ...details].filter(Boolean).join(' · ');
-}
-
 export default function GeneratePage({ navigate, notify, onGenerated, onSemesterChange, departments = [], initialSemester = 3 }) {
   const [semester, setSemester] = useState(initialSemester);
   const [department, setDepartment] = useState(ALL_DEPARTMENTS);
@@ -51,12 +32,10 @@ export default function GeneratePage({ navigate, notify, onGenerated, onSemester
   const [done, setDone] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [candidate, setCandidate] = useState(null);
-  const [comparison, setComparison] = useState(null);
-  const [resolving, setResolving] = useState(false);
-  const [comparing, setComparing] = useState(false);
-  const [accepting, setAccepting] = useState(false);
+  const [violations, setViolations] = useState([]);
+  const [regenerationUsed, setRegenerationUsed] = useState(false);
+  const generationCycle = useRef(null);
+  const requestInFlight = useRef(false);
 
   useEffect(() => setSemester(initialSemester), [initialSemester]);
   useEffect(() => onSemesterChange?.(semester), [semester, onSemesterChange]);
@@ -93,13 +72,6 @@ export default function GeneratePage({ navigate, notify, onGenerated, onSemester
     if (group !== ALL_GROUPS && !scopedGroups.some((item) => String(item.id) === String(group))) setGroup(ALL_GROUPS);
   }, [group, scopedGroups]);
 
-  useEffect(() => {
-    setCandidate(null);
-    setComparison(null);
-    setDone(false);
-    setResult(null);
-  }, [semester, department, group]);
-
   const selectedScope = () => ({
     academic_year: '2026-27',
     semester,
@@ -117,112 +89,54 @@ export default function GeneratePage({ navigate, notify, onGenerated, onSemester
     }
   };
 
-  const showCandidateFailure = (requestError) => {
-    const payload = requestError?.payload;
-    if (payload?.error !== 'NO_VALID_CANDIDATE') return false;
-    setCandidate(payload);
-    setComparison(null);
-    setError(payload.message || 'No acceptable candidate was found. The saved timetable is unchanged.');
+  const showValidationFailure = (payload) => {
+    if (!payload?.validation?.violations?.length) return false;
+    setViolations(payload.validation.violations);
+    setError('');
     return true;
   };
 
-  const run = async () => {
+  const run = async (regenerate = false) => {
+    if (requestInFlight.current) return;
+    if (regenerate) {
+      if (!violations.length || !generationCycle.current || generationCycle.current.regenerated) return;
+      generationCycle.current.regenerated = true;
+      setRegenerationUsed(true);
+    } else {
+      generationCycle.current = { scope: selectedScope(), regenerated: false };
+      setRegenerationUsed(false);
+      setViolations([]);
+    }
+    requestInFlight.current = true;
     setRunning(true);
     setDone(false);
     setResult(null);
-    setCandidate(null);
-    setComparison(null);
     setError('');
-    setNotice('');
     try {
-      const response = await requestWithTimeout((signal) => api.generateTimetableCandidate(selectedScope(), signal));
-      setCandidate(response);
-      if (!response.success) setError(response.message || 'No acceptable candidate was found. The saved timetable is unchanged.');
+      const response = await requestWithTimeout((signal) => api.generateTimetable(generationCycle.current.scope, signal));
+      if (showValidationFailure(response)) return;
+      setViolations([]);
+      if (response.success && response.validation?.valid === true) {
+        setResult(response);
+        setDone(true);
+        notify('Timetable generated successfully');
+        onGenerated(response.timetable_id);
+      } else {
+        setError(`Generation failed: ${response.message || response.error || 'The schedule could not be validated.'}`);
+      }
     } catch (requestError) {
-      if (!showCandidateFailure(requestError)) setError(generationError(requestError));
+      if (!showValidationFailure(requestError.payload)) {
+        setViolations([]);
+        setError(generationError(requestError));
+      }
     } finally {
+      requestInFlight.current = false;
       setRunning(false);
     }
   };
 
-  const compare = async () => {
-    if (!candidate?.success) return;
-    setComparing(true);
-    setError('');
-    try {
-      const response = await requestWithTimeout((signal) => api.compareTimetableCandidate({
-        ...selectedScope(),
-        base_latest_timetable_id: candidate.base_latest_timetable_id,
-        assignments: candidate.assignments,
-      }, signal));
-      setComparison(response);
-    } catch (requestError) {
-      if (!showCandidateFailure(requestError)) setError(requestError.message || generationError(requestError));
-    } finally {
-      setComparing(false);
-    }
-  };
-
-  const resolveAndRegenerate = async () => {
-    if (!candidate) return;
-    setResolving(true);
-    setError('');
-    setNotice('');
-    try {
-      const response = await requestWithTimeout((signal) => api.generateTimetableCandidate({
-        ...selectedScope(),
-        additional_attempts: 3,
-        check_base: true,
-        expected_base_timetable_id: candidate.base_latest_timetable_id,
-        best_candidate: candidate.success ? candidate : undefined,
-      }, signal));
-      setCandidate(response);
-      setComparison(response.success ? response.comparison : null);
-      if (!response.success) setError(response.message || 'No acceptable candidate was found. The saved timetable is unchanged.');
-    } catch (requestError) {
-      if (!showCandidateFailure(requestError)) setError(requestError.message || generationError(requestError));
-    } finally {
-      setResolving(false);
-    }
-  };
-
-  const accept = async () => {
-    if (!candidate?.success || !candidate.validation?.valid || accepting) return;
-    setAccepting(true);
-    setError('');
-    try {
-      const response = await requestWithTimeout((signal) => api.acceptTimetableCandidate({
-        ...selectedScope(),
-        base_latest_timetable_id: candidate.base_latest_timetable_id,
-        assignments: candidate.assignments,
-        generation_time_ms: candidate.generation_time_ms || 0,
-      }, signal));
-      setResult(response);
-      setDone(true);
-      setCandidate(null);
-      setComparison(null);
-      notify(response.message || 'Candidate accepted as a new timetable version.');
-      onGenerated(response.timetable_id);
-    } catch (requestError) {
-      setError(requestError.message || generationError(requestError));
-    } finally {
-      setAccepting(false);
-    }
-  };
-
-  const discard = () => {
-    setCandidate(null);
-    setComparison(null);
-    setError('');
-    setNotice('Candidate discarded. The saved timetable was not changed.');
-  };
-
-  const busy = running || resolving || comparing || accepting;
-  const workflowProgress = done ? 7 : candidate?.success ? 6 : running || resolving ? 4 : 0;
-  const workflowSteps = ['Preparing academic data', 'Loading faculty availability', 'Building scheduling model', 'Applying hard constraints', 'Optimizing schedule', 'Validating candidate', candidate?.success ? 'Awaiting explicit acceptance' : done ? 'Timetable accepted' : 'Ready for candidate review'];
-  const previousComparison = comparison?.previous ?? candidate?.comparison?.previous;
-  const assignmentChanges = comparison?.assignment_changes;
-  const scoreDelta = comparison?.optimization_score_delta ?? candidate?.comparison?.optimization_score_delta;
+  const workflowProgress = done ? 7 : running ? 4 : 0;
+  const workflowSteps = ['Preparing academic data', 'Loading faculty availability', 'Building scheduling model', 'Applying hard constraints', 'Optimizing timetable', 'Validating schedule', 'Persisting timetable'];
 
   return <>
     <div className="page-header">
@@ -238,54 +152,34 @@ export default function GeneratePage({ navigate, notify, onGenerated, onSemester
           <label>Department<select value={department} onChange={(event) => setDepartment(event.target.value)}>{departmentOptions.map((value) => <option key={value}>{value}</option>)}</select></label>
           <label>Student group<select value={group} disabled={loadingGroups} onChange={(event) => setGroup(event.target.value)}><option value={ALL_GROUPS}>{loadingGroups ? 'Loading groups...' : ALL_GROUPS}</option>{scopedGroups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         </div>
-        <Button primary icon={Play} onClick={run}>{running ? 'Generating candidate...' : 'Generate Candidate'}</Button>
+        <Button primary icon={Play} onClick={() => run()} disabled={running}>{running ? 'Generating timetable...' : 'Generate Timetable'}</Button>
         {error && <div className="error-callout" role="alert"><CircleAlert size={16}/>{error}</div>}
-        {notice && <div className="healthy-callout" role="status"><Check size={16}/>{notice}</div>}
+        {violations.length > 0 && <>
+          <div className="error-callout" role="alert"><CircleAlert size={16}/><div>
+            <strong>Scheduling Conflict Detected</strong>
+            {violations.map((violation, index) => <div key={`${violation.code}-${index}`}>
+              {violation.resource && <div><strong>{violation.code === 'faculty_overlap' ? 'Faculty' : violation.code === 'group_overlap' ? 'Student group' : violation.code === 'room_overlap' ? 'Room' : 'Resource'}:</strong> {violation.resource}</div>}
+              {violation.faculty && <div><strong>Faculty:</strong> {violation.faculty}</div>}
+              {violation.day && <div><strong>Day:</strong> {violation.day}</div>}
+              {(violation.requested_time || violation.time) && <div><strong>Time:</strong> {violation.requested_time || violation.time}</div>}
+              {violation.conflicting_time && violation.conflicting_time !== violation.requested_time && <div><strong>Overlapping time:</strong> {violation.conflicting_time}</div>}
+              {(violation.class || violation.classes?.length) && <div><strong>Class:</strong> {violation.class || violation.classes.join(' / ')}</div>}
+              <div><strong>Reason:</strong> {violation.message}</div>
+            </div>)}
+          </div></div>
+          {(!regenerationUsed || running) && <Button onClick={() => run(true)} disabled={running || regenerationUsed}>{running ? 'Regenerating timetable...' : 'Regenerate Timetable'}</Button>}
+        </>}
       </section>
       <section className="panel workflow-panel">
-        <div className="panel-heading"><div><span className="eyebrow">Optimization workflow</span><h3>{running || resolving ? 'Finding a valid schedule' : candidate?.success ? 'Candidate ready for review' : done ? 'Timetable accepted' : 'Ready when you are'}</h3></div><Activity className={running || resolving ? 'spin' : ''} size={19}/></div>
+        <div className="panel-heading"><div><span className="eyebrow">Optimization workflow</span><h3>{running ? 'Finding the best schedule' : done ? 'Run complete' : 'Ready when you are'}</h3></div><Activity className={running ? 'spin' : ''} size={19}/></div>
         {workflowSteps.map((step, index) => <div className={index < workflowProgress ? 'workflow-step complete' : 'workflow-step'} key={`${step}-${index}`}><span className="workflow-icon">{index < workflowProgress ? <Check size={14}/> : <span>{String(index + 1).padStart(2, '0')}</span>}</span><span>{step}</span></div>)}
       </section>
     </div>
 
-    {candidate && <section className="panel config-panel" aria-live="polite">
-      <div className="panel-heading"><div><span className="eyebrow">Candidate review</span><h3>{candidate.success ? 'Validated candidate' : 'No acceptable candidate found'}</h3></div><span className={`status-badge ${candidate.success ? 'success' : 'warning'}`}><i/>{candidate.success ? 'Ready for review' : 'Not acceptable'}</span></div>
-      {candidate.candidate_id && <p>Candidate ID: <strong>{candidate.candidate_id}</strong></p>}
-      <div className="form-grid">
-        <div><strong>Optimization score</strong><p>{candidate.optimization_score ?? '—'}{scoreDelta != null ? ` (${scoreDelta >= 0 ? '+' : ''}${scoreDelta} vs previous)` : ''}</p></div>
-        <div><strong>Objective value (lower is better)</strong><p>{candidate.objective_value ?? '—'}</p></div>
-        <div><strong>Hard-constraint violations</strong><p>{candidate.validation?.violation_count ?? '—'}</p></div>
-        <div><strong>Solver attempts</strong><p>{candidate.attempt_count ?? 1}{candidate.attempts?.length ? ` (${candidate.attempts.map((attempt) => attempt.status).join(', ')})` : ''}</p></div>
-      </div>
-      {!previousComparison && candidate.success && <p>{candidate.comparison?.message || 'No previous timetable exists for this academic year, semester, and scope.'}</p>}
-      {candidate.validation?.violations?.length > 0 && <div className="error-callout"><CircleAlert size={16}/><div><strong>Candidate validation findings</strong><ul>{candidate.validation.violations.map((violation, index) => <li key={`${violation.code}-${index}`}>{violationDescription(violation)}</li>)}</ul></div></div>}
-      <div className="result-actions">
-        <button className="button" type="button" onClick={compare} disabled={!candidate.success || busy}>{comparing ? 'Comparing...' : 'Compare Timetables'}</button>
-        <button className="button" type="button" onClick={resolveAndRegenerate} disabled={busy}>{resolving ? 'Resolving...' : 'Resolve & Regenerate'}</button>
-        <button className="button primary" type="button" onClick={accept} disabled={!candidate.success || !candidate.validation?.valid || busy}>{accepting ? 'Accepting...' : 'Accept Candidate'}</button>
-        <button className="button" type="button" onClick={discard} disabled={busy}>Discard Candidate</button>
-      </div>
-      {comparison && <div className="candidate-comparison">
-        <div className="panel-heading"><div><span className="eyebrow">Timetable comparison</span><h3>{previousComparison ? `${previousComparison.name || 'Previous timetable'} vs candidate` : 'No previous version'}</h3></div></div>
-        <p>Previous ID: {previousComparison?.timetable_id || 'None'} · Candidate ID: {candidate.candidate_id || 'Not available'}</p>
-        <p>Optimization scores: previous {previousComparison?.optimization_score ?? '—'} · candidate {comparison.candidate.optimization_score ?? candidate.optimization_score ?? '—'} · delta {comparison.optimization_score_delta == null ? '—' : `${comparison.optimization_score_delta >= 0 ? '+' : ''}${comparison.optimization_score_delta}`}</p>
-        <p>Hard violations: previous {previousComparison?.validation.violation_count ?? '—'} · candidate {comparison.candidate.validation.violation_count}</p>
-        {assignmentChanges && <>
-          <p>Assignment changes: {assignmentChanges.change_count} ({assignmentChanges.added.length} added, {assignmentChanges.removed.length} removed, {assignmentChanges.changed.length} changed). These changes are not necessarily conflicts.</p>
-          {[['Added', assignmentChanges.added], ['Removed', assignmentChanges.removed]].map(([label, items]) => items.length > 0 && <div key={label}><strong>{label}</strong><ul>{items.map((item, index) => <li key={`${label}-${index}`}>{assignmentDescription(item)}</li>)}</ul></div>)}
-          {assignmentChanges.changed.length > 0 && <div><strong>Changed assignments</strong><ul>{assignmentChanges.changed.map((item, index) => <li key={`changed-${index}`}>{assignmentDescription(item.before)} → {assignmentDescription(item.after)}</li>)}</ul></div>}
-        </>}
-        <div className="form-grid">
-          <div><strong>Previous hard-constraint violations</strong>{previousComparison?.validation.violations?.length ? <ul>{previousComparison.validation.violations.map((item, index) => <li key={`previous-${index}`}>{violationDescription(item)}</li>)}</ul> : <p>{previousComparison ? 'None' : 'No previous timetable in this scope'}</p>}</div>
-          <div><strong>Candidate hard-constraint violations</strong>{comparison.candidate.validation.violations.length ? <ul>{comparison.candidate.validation.violations.map((item, index) => <li key={`candidate-${index}`}>{violationDescription(item)}</li>)}</ul> : <p>None</p>}</div>
-        </div>
-      </div>}
-    </section>}
-
-    {done && result && <section className="result-panel"><div className="result-icon"><Check size={24}/></div><div><span className="eyebrow">Timetable accepted</span><h2>Semester {semester} is saved as a new timetable version.</h2><p>Timetable ID: {result.timetable_id}</p></div><div className="result-actions"><button className="button" onClick={() => navigate('timetable')}>View timetable</button><button className="button" onClick={() => navigate('analytics')}>Analytics</button></div></section>}
+    {done && result && <section className="result-panel"><div className="result-icon"><Check size={24}/></div><div><span className="eyebrow">Timetable generated</span><h2>Semester {result.semester} is {result.solver_status === 'OPTIMAL' ? 'optimized' : 'generated'} and ready.</h2><p>Timetable ID: {result.timetable_id}</p></div><div className="result-actions"><button className="button" onClick={() => navigate('timetable')}>View timetable</button><button className="button" onClick={() => navigate('analytics')}>Analytics</button></div></section>}
   </>;
 }
 
-function Button({ children, primary = false, icon: Icon, onClick }) {
-  return <button className={primary ? 'button primary' : 'button'} onClick={onClick}>{Icon && <Icon size={16}/>}<span>{children}</span></button>;
+function Button({ children, primary = false, icon: Icon, onClick, disabled = false }) {
+  return <button className={primary ? 'button primary' : 'button'} onClick={onClick} disabled={disabled}>{Icon && <Icon size={16}/>}<span>{children}</span></button>;
 }

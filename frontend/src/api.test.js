@@ -88,26 +88,25 @@ test('assignFacultyToEntry uses the row-scoped PUT endpoint', async () => {
   }
 });
 
-test('candidate lifecycle methods use their separate structured endpoints', async () => {
+test('generation uses the original endpoint once and preserves scope and validation errors', async () => {
   const previousFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ success: true }) };
+    return { ok: false, status: 400, json: async () => ({ success: false, error: 'SCHEDULING_CONFLICT', validation: { valid: false, violations: [{ code: 'faculty_overlap', resource: 'Dr. Ravi' }] } }) };
   };
-  const payload = { academic_year: '2026-27', semester: 3, assignments: [] };
+  const payload = { academic_year: '2026-27', semester: 3, department: 'CSE-AIML', student_group: 'group-1' };
 
   try {
-    await api.generateTimetableCandidate(payload);
-    await api.compareTimetableCandidate(payload);
-    await api.acceptTimetableCandidate(payload);
+    await assert.rejects(api.generateTimetable(payload), (error) => {
+      assert.equal(error.payload.validation.violations[0].resource, 'Dr. Ravi');
+      return true;
+    });
     assert.deepEqual(calls.map((call) => new URL(call.url, 'http://localhost').pathname), [
-      '/api/timetable/candidate',
-      '/api/timetable/candidate/compare',
-      '/api/timetable/candidate/accept',
+      '/api/timetable/generate',
     ]);
     assert.ok(calls.every((call) => call.options.method === 'POST'));
-    assert.deepEqual(JSON.parse(calls[2].options.body), payload);
+    assert.deepEqual(JSON.parse(calls[0].options.body), payload);
   } finally {
     globalThis.fetch = previousFetch;
   }

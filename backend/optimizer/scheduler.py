@@ -9,6 +9,7 @@ from typing import Any
 from ortools.sat.python import cp_model
 
 from config import HAS_SUPABASE_CONFIG
+from optimizer.validation import validate_candidate_assignments
 from services.supabase_service import supabase_service
 from services.timetable_service import timetable_service
 
@@ -389,6 +390,20 @@ def generate_timetable(
             "status": "failed",
         }
 
+    validation = validate_candidate_assignments(
+        selected_entries, courses, faculty_members, groups, rooms, time_slots, availability_rows,
+    )
+    if not validation["valid"]:
+        return {
+            "success": False,
+            "error": "SCHEDULING_CONFLICT",
+            "message": "Scheduling violations were detected. The saved timetable is unchanged.",
+            "academic_year": academic_year,
+            "semester": semester,
+            "status": solver.StatusName(status),
+            "validation": validation,
+        }
+
     if not persist:
         return {
             "success": True,
@@ -400,6 +415,7 @@ def generate_timetable(
             "total_conflicts": 0,
             "generation_time_ms": int((time.time() - start_time) * 1000),
             "assignments": selected_entries,
+            "validation": validation,
         }
 
     # Save timetable metadata and then entries.
@@ -455,4 +471,6 @@ def generate_timetable(
         "total_conflicts": 0,
         "generation_time_ms": timetable_payload["generation_time_ms"],
         "entries_created": len(inserted_rows),
+        "solver_status": solver.StatusName(status),
+        "validation": validation,
     }

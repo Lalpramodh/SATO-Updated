@@ -1,5 +1,4 @@
 import logging
-from typing import Any
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -7,7 +6,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from config import FLASK_DEBUG, FLASK_HOST, FLASK_PORT, HAS_SUPABASE_CONFIG
 from optimizer.scheduler import generate_timetable
-from services.candidate_service import accept_timetable_candidate, compare_timetable_candidate, generate_timetable_candidate
 from services.timetable_service import timetable_service
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -22,24 +20,6 @@ class GenerateTimetableRequest(BaseModel):
     semester: int = Field(..., ge=3, le=3)
     department: str | None = None
     student_group: str | None = None
-
-
-class CandidateTimetableRequest(GenerateTimetableRequest):
-    additional_attempts: int = Field(default=0, ge=0, le=3)
-    check_base: bool = False
-    expected_base_timetable_id: str | None = None
-    best_candidate: dict[str, Any] | None = None
-
-
-class CandidateComparisonRequest(GenerateTimetableRequest):
-    base_latest_timetable_id: str | None = None
-    assignments: list[dict[str, Any]]
-
-
-class CandidateAcceptanceRequest(GenerateTimetableRequest):
-    base_latest_timetable_id: str | None = None
-    assignments: list[dict[str, Any]]
-    generation_time_ms: int = Field(default=0, ge=0)
 
 
 class CreateFacultyRequest(BaseModel):
@@ -284,92 +264,6 @@ def generate_timetable_endpoint():
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Timetable generation failed")
         return jsonify({"error": "Unable to generate timetable."}), 500
-
-
-@app.post('/api/timetable/candidate')
-def generate_timetable_candidate_endpoint():
-    try:
-        payload = request.get_json(silent=True)
-        if not payload:
-            return jsonify({"error": "Request body is required."}), 400
-        request_model = CandidateTimetableRequest.model_validate(payload)
-        result = generate_timetable_candidate(
-            request_model.academic_year,
-            request_model.semester,
-            request_model.department,
-            request_model.student_group,
-            additional_attempts=request_model.additional_attempts,
-            expected_base_timetable_id=request_model.expected_base_timetable_id,
-            check_base=request_model.check_base,
-            best_candidate=request_model.best_candidate,
-        )
-        if result.get("success"):
-            return jsonify(result), 200
-        return jsonify(result), result.get("status", 422)
-    except ValidationError as exc:
-        return jsonify({"error": "Invalid candidate request.", "details": exc.errors()}), 400
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError:
-        logger.exception("Candidate generation backend is unavailable")
-        return jsonify({"error": "Candidate generation backend is unavailable."}), 503
-    except Exception:
-        logger.exception("Candidate generation failed")
-        return jsonify({"error": "Unable to generate a timetable candidate."}), 500
-
-
-@app.post('/api/timetable/candidate/compare')
-def compare_timetable_candidate_endpoint():
-    try:
-        payload = request.get_json(silent=True)
-        if not payload:
-            return jsonify({"error": "Request body is required."}), 400
-        request_model = CandidateComparisonRequest.model_validate(payload)
-        result = compare_timetable_candidate(
-            request_model.academic_year,
-            request_model.semester,
-            request_model.department,
-            request_model.student_group,
-            request_model.assignments,
-            request_model.base_latest_timetable_id,
-        )
-        return (jsonify(result), 200) if result.get("success") else (jsonify(result), result.get("status", 422))
-    except ValidationError as exc:
-        return jsonify({"error": "Invalid candidate comparison request.", "details": exc.errors()}), 400
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception:
-        logger.exception("Timetable candidate comparison failed")
-        return jsonify({"error": "Unable to compare timetable candidates."}), 500
-
-
-@app.post('/api/timetable/candidate/accept')
-def accept_timetable_candidate_endpoint():
-    try:
-        payload = request.get_json(silent=True)
-        if not payload:
-            return jsonify({"error": "Request body is required."}), 400
-        request_model = CandidateAcceptanceRequest.model_validate(payload)
-        result = accept_timetable_candidate(
-            request_model.academic_year,
-            request_model.semester,
-            request_model.department,
-            request_model.student_group,
-            request_model.assignments,
-            request_model.base_latest_timetable_id,
-            request_model.generation_time_ms,
-        )
-        return (jsonify(result), 201) if result.get("success") else (jsonify(result), result.get("status", 422))
-    except ValidationError as exc:
-        return jsonify({"error": "Invalid candidate acceptance request.", "details": exc.errors()}), 400
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError:
-        logger.exception("Candidate acceptance backend is unavailable")
-        return jsonify({"error": "Candidate acceptance backend is unavailable."}), 503
-    except Exception:
-        logger.exception("Timetable candidate acceptance failed")
-        return jsonify({"error": "Unable to accept the timetable candidate."}), 500
 
 
 if __name__ == '__main__':

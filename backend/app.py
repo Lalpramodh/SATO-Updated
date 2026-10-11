@@ -79,6 +79,12 @@ def faculty_endpoint():
         request_model = CreateFacultyRequest.model_validate(payload)
         record = timetable_service.insert_faculty(request_model.model_dump(exclude={"semester", "course_id"}))
         assignment = timetable_service.assign_faculty_to_selected_course(record, request_model.semester, request_model.course_id)
+        if not assignment.get("assigned", False) and assignment.get("error") == "FACULTY_SCHEDULING_CONFLICT":
+            return jsonify({
+                "error": assignment["error"],
+                "message": assignment["message"],
+                "details": assignment.get("details", {})
+            }), 409
         return jsonify({"faculty": record, "assignment": assignment, "message": assignment["message"]}), 201
     except ValidationError as exc:
         return jsonify({"error": "Invalid faculty details.", "details": exc.errors()}), 400
@@ -182,6 +188,29 @@ def get_timetables():
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Failed to fetch timetables")
         return jsonify({"error": "Unable to load timetables."}), 500
+
+
+@app.get('/api/timetable/previous')
+def get_previous_timetable():
+    try:
+        if not HAS_SUPABASE_CONFIG:
+            return jsonify({"error": "Supabase is not configured."}), 503
+        academic_year = request.args.get('academic_year')
+        semester = request.args.get('semester')
+        current_timetable_id = request.args.get('current_timetable_id')
+        if not academic_year:
+            return jsonify({"timetable": None, "entries": [], "message": "No previous timetable is available for comparison yet."}), 200
+        try:
+            semester_value = int(semester) if semester not in (None, '') else None
+        except ValueError:
+            return jsonify({"error": "semester must be an integer."}), 400
+        previous = timetable_service.get_previous_timetable_for_scope(academic_year, semester_value, current_timetable_id=current_timetable_id)
+        if previous is None:
+            return jsonify({"timetable": None, "entries": [], "message": "No previous timetable is available for comparison yet."}), 200
+        return jsonify(previous), 200
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to fetch previous timetable")
+        return jsonify({"error": "Unable to load previous timetable."}), 500
 
 
 @app.get('/api/timetable/<timetable_id>')

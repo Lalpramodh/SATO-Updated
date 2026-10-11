@@ -102,6 +102,82 @@ class TimetableService:
             raise RuntimeError("Supabase is not configured.")
         return self.supabase.insert_faculty(payload)
 
+    def validate_faculty_assignment_conflict(
+        self,
+        faculty_id: str | int,
+        timetable_id: str | None = None,
+        candidate_slot_ids: list[str] | None = None,
+        target_course_id: str | None = None,
+        existing_entries: list[dict[str, Any]] | None = None,
+        time_slots: list[dict[str, Any]] | None = None,
+        faculty_name: str | None = None,
+        candidate_duration_hours: int = 1,
+        exclude_entry_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if faculty_id in (None, '') or not candidate_slot_ids:
+            return None
+
+        if existing_entries is None:
+            try:
+                existing_entries = self.get_timetable_entries(timetable_id) if timetable_id else self.get_timetable_entries()
+            except RuntimeError:
+                existing_entries = []
+        if time_slots is None:
+            try:
+                time_slots = self.get_time_slots()
+            except RuntimeError:
+                time_slots = []
+
+        slot_map = {str(slot.get("id")): slot for slot in time_slots if slot.get("id") is not None}
+        try:
+            course_lookup = {str(item.get("id")): item for item in self.get_courses()}
+        except RuntimeError:
+            course_lookup = {}
+        day_names = {1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday"}
+
+        for candidate_slot_id in candidate_slot_ids:
+            candidate_slot = slot_map.get(str(candidate_slot_id))
+            if candidate_slot is None:
+                continue
+            for entry in existing_entries:
+                if str(entry.get("id")) == str(exclude_entry_id):
+                    continue
+                if str(entry.get("faculty_id")) != str(faculty_id):
+                    continue
+                if target_course_id is not None and str(entry.get("course_id")) == str(target_course_id):
+                    continue
+
+                occupied_slot = slot_map.get(str(entry.get("time_slot_id")))
+                if occupied_slot is None:
+                    continue
+
+                duration = max(1, int(entry.get("duration_hours") or candidate_duration_hours or 1))
+                candidate_duration = max(1, int(candidate_duration_hours or 1))
+                if self._time_slots_overlap(
+                    candidate_slot,
+                    {"duration_hours": candidate_duration},
+                    occupied_slot,
+                    {"duration_hours": duration},
+                ):
+                    conflicting_course = course_lookup.get(str(entry.get("course_id"))) or {}
+                    requested_day_name = day_names.get(int(candidate_slot.get("day_of_week") or 0), "Unknown")
+                    requested_start = str(candidate_slot.get("start_time") or "00:00")[:5]
+                    requested_end = str(candidate_slot.get("end_time") or "00:00")[:5]
+                    conflicting_slot_start = str(occupied_slot.get("start_time") or "00:00")[:5]
+                    conflicting_slot_end = str(occupied_slot.get("end_time") or "00:00")[:5]
+                    return {
+                        "error": "FACULTY_SCHEDULING_CONFLICT",
+                        "message": "This faculty member is already assigned to another class during this time slot. Please select a different faculty member or time slot.",
+                        "details": {
+                            "faculty": faculty_name or str(faculty_id),
+                            "day": requested_day_name,
+                            "requested_time": f"{requested_start}-{requested_end}",
+                            "conflicting_course": conflicting_course.get("course_name") or conflicting_course.get("course_code") or "Assigned course",
+                            "conflicting_time": f"{conflicting_slot_start}-{conflicting_slot_end}",
+                        },
+                    }
+        return None
+
     def assign_faculty_to_selected_course(self, faculty: dict[str, Any], semester: int, course_id: str):
         if not HAS_SUPABASE_CONFIG:
             raise RuntimeError("Supabase is not configured.")
@@ -146,18 +222,25 @@ class TimetableService:
             return {"assigned": False, "message": "Faculty cannot be assigned to this subject because of a timetable conflict."}
 
         occupied = [entry for entry in entries if str(entry.get("faculty_id")) == str(faculty_id)]
-        if any(
-            self._time_slots_overlap(
-                slots.get(str(candidate.get("time_slot_id"))),
-                candidate,
-                slots.get(str(occupied_entry.get("time_slot_id"))),
-                occupied_entry,
+        for candidate in course_entries:
+            conflict = self.validate_faculty_assignment_conflict(
+                faculty_id=faculty_id,
+                timetable_id=timetable_id,
+                candidate_slot_ids=[str(candidate.get("time_slot_id"))],
+                target_course_id=str(course_id),
+                existing_entries=entries,
+                time_slots=time_slots,
+                faculty_name=faculty.get("name"),
+                candidate_duration_hours=int(candidate.get("duration_hours") or 1),
+                exclude_entry_id=None,
             )
-            for candidate in course_entries
-            for occupied_entry in occupied
-            if str(occupied_entry.get("course_id")) != str(course_id)
-        ):
-            return {"assigned": False, "message": "Faculty cannot be assigned to this subject because of a timetable conflict."}
+            if conflict:
+                return {
+                    "assigned": False,
+                    "error": conflict["error"],
+                    "message": conflict["message"],
+                    "details": conflict["details"],
+                }
 
         entry_ids = [entry["id"] for entry in course_entries]
         updated = self.supabase.update_timetable_entries_faculty(timetable_id, str(course_id), str(faculty_id))
@@ -188,6 +271,36 @@ class TimetableService:
         left_end = max(left_end, left_start + left_duration)
         right_end = max(right_end, right_start + right_duration)
         return left_start < right_end and right_start < left_end
+
+    def get_previous_timetable_for_scope(self, academic_year: str | None, semester: int | None, current_timetable_id: str | None = None):
+        if not academic_year or semester is None:
+            return None
+
+        try:
+            timetables = self.get_timetables(academic_year=academic_year, semester=semester)
+        except RuntimeError:
+            timetables = []
+        eligible = [
+            row for row in timetables
+            if str(row.get("id")) != str(current_timetable_id) and row.get("id") is not None
+        ]
+        if not eligible:
+            return None
+
+        previous = sorted(
+            eligible,
+            key=lambda row: str(row.get("created_at") or "1970-01-01T00:00:00Z"),
+            reverse=True,
+        )[0]
+        previous_id = previous.get("id")
+        if not previous_id:
+            return None
+
+        try:
+            previous_entries = self.get_enriched_timetable_entries(previous_id, semester)
+        except RuntimeError:
+            previous_entries = self.get_timetable_entries(previous_id) if previous_id else []
+        return {"timetable": previous, "entries": previous_entries, "message": "Previous timetable loaded."}
 
     def get_student_groups(self, semester: int | None = None, department: str | None = None):
         if not HAS_SUPABASE_CONFIG:

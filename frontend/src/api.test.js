@@ -87,3 +87,28 @@ test('assignFacultyToEntry uses the row-scoped PUT endpoint', async () => {
     globalThis.fetch = previousFetch;
   }
 });
+
+test('candidate lifecycle methods use their separate structured endpoints', async () => {
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ success: true }) };
+  };
+  const payload = { academic_year: '2026-27', semester: 3, assignments: [] };
+
+  try {
+    await api.generateTimetableCandidate(payload);
+    await api.compareTimetableCandidate(payload);
+    await api.acceptTimetableCandidate(payload);
+    assert.deepEqual(calls.map((call) => new URL(call.url, 'http://localhost').pathname), [
+      '/api/timetable/candidate',
+      '/api/timetable/candidate/compare',
+      '/api/timetable/candidate/accept',
+    ]);
+    assert.ok(calls.every((call) => call.options.method === 'POST'));
+    assert.deepEqual(JSON.parse(calls[2].options.body), payload);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

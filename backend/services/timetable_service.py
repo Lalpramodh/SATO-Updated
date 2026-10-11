@@ -416,6 +416,7 @@ class TimetableService:
             query = query.filter("academic_year", "eq", academic_year)
         if semester is not None:
             query = query.filter("semester", "eq", semester)
+        query = query.filter("name", "not.like", "SATO-CANDIDATE-PENDING-%")
         response = query.order("created_at", desc=True).execute()
         return response.data if hasattr(response, "data") else response
 

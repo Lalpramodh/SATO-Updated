@@ -129,6 +129,12 @@ class SupabaseService:
             return response.data[0]
         return response
 
+    def update_timetable_name(self, timetable_id: str, name: str):
+        if not self.client:
+            raise RuntimeError("Supabase is not configured.")
+        response = self.client.table("timetables").update({"name": name}).eq("id", timetable_id).select("id").execute()
+        return response.data if hasattr(response, "data") else response
+
     def insert_timetable_entries(self, rows: list[dict[str, Any]]):
         if not self.client:
             raise RuntimeError("Supabase is not configured.")

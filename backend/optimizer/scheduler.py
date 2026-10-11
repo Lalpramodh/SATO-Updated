@@ -120,7 +120,16 @@ def _room_capacity_ok(course: dict[str, Any], room: dict[str, Any], group: dict[
     return room_capacity >= group_size
 
 
-def generate_timetable(academic_year: str, semester: int, department: str | None = None, student_group: str | None = None):
+def generate_timetable(
+    academic_year: str,
+    semester: int,
+    department: str | None = None,
+    student_group: str | None = None,
+    *,
+    persist: bool = True,
+    max_time_seconds: float | None = None,
+    course_ids: set[str] | None = None,
+):
     start_time = time.time()
     if not academic_year or not str(academic_year).strip():
         raise ValueError("academic_year is required.")
@@ -139,6 +148,8 @@ def generate_timetable(academic_year: str, semester: int, department: str | None
     courses = timetable_service.get_courses(semester)
     if selected_department:
         courses = [course for course in courses if str(course.get("department_id")) == str(selected_department.get("id"))]
+    if course_ids is not None:
+        courses = [course for course in courses if str(course.get("id")) in course_ids]
     if not courses:
         raise ValueError(f"No courses found for academic_year={academic_year}, semester={semester}.")
 
@@ -344,7 +355,7 @@ def generate_timetable(academic_year: str, semester: int, department: str | None
         model.Minimize(sum(objective_terms))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = float(os.getenv("OPTIMIZER_MAX_TIME_SECONDS", "300"))
+    solver.parameters.max_time_in_seconds = max_time_seconds or float(os.getenv("OPTIMIZER_MAX_TIME_SECONDS", "300"))
     solver.parameters.num_search_workers = 8
     status = solver.Solve(model)
 
@@ -376,6 +387,19 @@ def generate_timetable(academic_year: str, semester: int, department: str | None
             "academic_year": academic_year,
             "semester": semester,
             "status": "failed",
+        }
+
+    if not persist:
+        return {
+            "success": True,
+            "academic_year": academic_year,
+            "semester": semester,
+            "status": solver.StatusName(status),
+            "optimization_score": 90.0,
+            "objective_value": float(solver.ObjectiveValue()),
+            "total_conflicts": 0,
+            "generation_time_ms": int((time.time() - start_time) * 1000),
+            "assignments": selected_entries,
         }
 
     # Save timetable metadata and then entries.

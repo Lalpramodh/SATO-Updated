@@ -76,6 +76,9 @@ export const api = {
   },
   getSummary: (semester = 1, signal) => request(`/timetable/data?semester=${semester}`, { signal }),
   generateTimetable: (payload, signal) => request('/timetable/generate', { method: 'POST', body: JSON.stringify(payload), signal }),
+  generateTimetableCandidate: (payload, signal) => request('/timetable/candidate', { method: 'POST', body: JSON.stringify(payload), signal }),
+  compareTimetableCandidate: (payload, signal) => request('/timetable/candidate/compare', { method: 'POST', body: JSON.stringify(payload), signal }),
+  acceptTimetableCandidate: (payload, signal) => request('/timetable/candidate/accept', { method: 'POST', body: JSON.stringify(payload), signal }),
 };
 
 export { API_BASE_URL };

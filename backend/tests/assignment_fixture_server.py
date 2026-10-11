@@ -1,38 +1,45 @@
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as app_module
+import optimizer.scheduler as scheduler_module
 import services.timetable_service as timetable_service_module
 from services.timetable_service import timetable_service
 
 
 department = {"id": "department-1", "code": "CSE-AIML", "name": "CSE-AIML"}
 courses = [
-    {"id": "course-1", "course_code": "CSE101", "course_name": "Existing class", "course_type": "theory", "department_id": department["id"], "semester": 3, "duration_hours": 1},
-    {"id": "course-2", "course_code": "CSE102", "course_name": "Overlapping class", "course_type": "theory", "department_id": department["id"], "semester": 3, "duration_hours": 2},
-    {"id": "course-3", "course_code": "CSE103", "course_name": "Adjacent class", "course_type": "theory", "department_id": department["id"], "semester": 3, "duration_hours": 1},
+    {"id": "course-1", "course_code": "CSE101", "course_name": "Existing class", "course_type": "theory", "department_id": department["id"], "semester": 3, "sessions_per_week": 1, "duration_hours": 1},
+    {"id": "course-2", "course_code": "CSE102", "course_name": "Overlapping class", "course_type": "theory", "department_id": department["id"], "group_id": "group-2", "semester": 3, "sessions_per_week": 1, "duration_hours": 2},
+    {"id": "course-3", "course_code": "CSE103", "course_name": "Adjacent class", "course_type": "theory", "department_id": department["id"], "group_id": "group-2", "semester": 3, "sessions_per_week": 1, "duration_hours": 1},
 ]
 groups = [
-    {"id": "group-1", "name": "CSE-AIML-Y2-S3-A", "semester": 3, "department_id": department["id"]},
-    {"id": "group-2", "name": "CSE-AIML-Y2-S3-B", "semester": 3, "department_id": department["id"]},
+    {"id": "group-1", "name": "CSE-AIML-Y2-S3-A", "semester": 3, "department_id": department["id"], "student_count": 50},
+    {"id": "group-2", "name": "CSE-AIML-Y2-S3-B", "semester": 3, "department_id": department["id"], "student_count": 50},
 ]
-rooms = [{"id": "room-1", "name": "CR-01", "room_type": "Classroom", "capacity": 60}]
+rooms = [
+    {"id": "room-1", "name": "CR-01", "room_type": "Classroom", "capacity": 60},
+    {"id": "room-2", "name": "CR-02", "room_type": "Classroom", "capacity": 60},
+]
 time_slots = [
-    {"id": "slot-mon-09", "day_of_week": 1, "start_time": "09:00:00", "end_time": "10:00:00"},
-    {"id": "slot-mon-10", "day_of_week": 1, "start_time": "10:00:00", "end_time": "11:00:00"},
-    {"id": "slot-mon-09-11", "day_of_week": 1, "start_time": "09:00:00", "end_time": "11:00:00"},
+    {"id": f"slot-day-{day}-{hour:02d}", "day_of_week": day, "start_time": f"{hour:02d}:00:00", "end_time": f"{hour + 1:02d}:00:00"}
+    for day in range(1, 6)
+    for hour in (9, 10, 11, 12, 14, 15)
 ]
 faculty = [
     {"id": "faculty-1", "name": "Dr. Ravi", "employee_code": "CSE-FAC-106", "email": "ravi@example.edu", "department_id": department["id"], "max_hours_per_week": 16},
     {"id": "faculty-2", "name": "Dr. Mehta", "employee_code": "CSE-FAC-107", "email": "mehta@example.edu", "department_id": department["id"], "max_hours_per_week": 16},
 ]
-timetable = {"id": "fixture-timetable", "academic_year": "2026-27", "semester": 3, "status": "generated"}
+timetable = {"id": "fixture-timetable", "name": "2026-27-sem3", "academic_year": "2026-27", "semester": 3, "status": "generated", "optimization_score": 86, "total_conflicts": 2}
+timetables = [timetable]
 entries = [
-    {"id": "entry-existing", "timetable_id": timetable["id"], "course_id": "course-1", "faculty_id": "faculty-1", "group_id": "group-1", "room_id": "room-1", "time_slot_id": "slot-mon-09", "duration_hours": 1},
-    {"id": "entry-overlap", "timetable_id": timetable["id"], "course_id": "course-2", "faculty_id": "faculty-2", "group_id": "group-2", "room_id": "room-1", "time_slot_id": "slot-mon-09-11", "duration_hours": 2},
-    {"id": "entry-adjacent", "timetable_id": timetable["id"], "course_id": "course-3", "faculty_id": "faculty-2", "group_id": "group-2", "room_id": "room-1", "time_slot_id": "slot-mon-10", "duration_hours": 1},
+    {"id": "entry-existing", "timetable_id": timetable["id"], "course_id": "course-1", "faculty_id": "faculty-1", "group_id": "group-1", "room_id": "room-1", "time_slot_id": "slot-day-1-09", "duration_hours": 1},
+    {"id": "entry-overlap", "timetable_id": timetable["id"], "course_id": "course-2", "faculty_id": "faculty-2", "group_id": "group-2", "room_id": "room-1", "time_slot_id": "slot-day-1-09", "duration_hours": 2},
+    {"id": "entry-overlap-next", "timetable_id": timetable["id"], "course_id": "course-2", "faculty_id": "faculty-2", "group_id": "group-2", "room_id": "room-1", "time_slot_id": "slot-day-1-10", "duration_hours": 2},
+    {"id": "entry-adjacent", "timetable_id": timetable["id"], "course_id": "course-3", "faculty_id": "faculty-2", "group_id": "group-2", "room_id": "room-1", "time_slot_id": "slot-day-1-10", "duration_hours": 1},
 ]
 
 
@@ -86,8 +93,32 @@ def update_entry_faculty(timetable_id, entry_id, faculty_id):
     return [dict(entry)]
 
 
+def update_timetable_name(timetable_id, name):
+    record = next((row for row in timetables if row["id"] == timetable_id), None)
+    if record is None:
+        return []
+    record["name"] = name
+    return [{"id": record["id"]}]
+
+
+def insert_timetable(payload):
+    record = {"id": f"accepted-{uuid.uuid4()}", "created_at": str(len(timetables)), **payload}
+    timetables.insert(0, record)
+    return record
+
+
+def insert_timetable_entries(rows):
+    inserted = []
+    for row in rows:
+        record = {"id": f"entry-{uuid.uuid4()}", **row}
+        entries.append(record)
+        inserted.append(dict(record))
+    return inserted
+
+
 def install_fixture():
     app_module.HAS_SUPABASE_CONFIG = True
+    scheduler_module.HAS_SUPABASE_CONFIG = True
     timetable_service_module.HAS_SUPABASE_CONFIG = True
     timetable_service.get_departments = lambda: [department]
     timetable_service.get_courses = lambda semester=None: [row for row in courses if semester is None or row["semester"] == semester]
@@ -96,8 +127,13 @@ def install_fixture():
     timetable_service.get_rooms = lambda: rooms
     timetable_service.get_time_slots = lambda: time_slots
     timetable_service.get_faculty_availability = lambda: []
-    timetable_service.get_timetable = lambda timetable_id: [timetable] if timetable_id == timetable["id"] else []
-    timetable_service.get_timetables = lambda academic_year=None, semester=None: [timetable]
+    timetable_service.get_timetable = lambda timetable_id: [row for row in timetables if timetable_id == row["id"]]
+    timetable_service.get_timetables = lambda academic_year=None, semester=None: [
+        row for row in timetables
+        if not str(row.get("name") or "").startswith("SATO-CANDIDATE-PENDING-")
+        if (academic_year is None or row.get("academic_year") == academic_year)
+        and (semester is None or int(row.get("semester") or 0) == int(semester))
+    ]
     timetable_service.get_timetable_entries = lambda timetable_id=None: [
         dict(row) for row in entries if timetable_id is None or row["timetable_id"] == timetable_id
     ]
@@ -111,6 +147,9 @@ def install_fixture():
     timetable_service.delete_faculty = lambda faculty_id: faculty.remove(next(row for row in faculty if row["id"] == faculty_id))
     timetable_service.supabase.update_timetable_entries_faculty = update_course_faculty
     timetable_service.supabase.update_timetable_entry_faculty = update_entry_faculty
+    timetable_service.supabase.insert_timetable = insert_timetable
+    timetable_service.supabase.insert_timetable_entries = insert_timetable_entries
+    timetable_service.supabase.update_timetable_name = update_timetable_name
 
 
 if __name__ == "__main__":
